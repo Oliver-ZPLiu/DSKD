@@ -36,7 +36,8 @@ class VariousDivergence(CrossEntropyLoss):
     ):
         self.distiller = distiller
         model = distiller.student_model
-        teacher_model = distiller.teacher_model
+        teacher = distiller.get_teacher()
+        teacher_model = distiller.get_teacher_model(teacher)
         outputs = model(
             input_data["input_ids"],
             attention_mask=input_data["attention_mask"],
@@ -52,10 +53,15 @@ class VariousDivergence(CrossEntropyLoss):
         with torch.no_grad():
             teacher_model.eval()
             teacher_outputs = teacher_model(
-                input_data[f"teacher_{distiller.teacher_model_type}_input_ids"],
-                attention_mask=input_data[f"teacher_{distiller.teacher_model_type}_attention_mask"],
-                position_ids=input_data.get(f"teacher_{distiller.teacher_model_type}_position_ids", None), 
-                output_hidden_states=True)
+                input_data[distiller.get_teacher_input_key(teacher, "input_ids")],
+                attention_mask=input_data[
+                    distiller.get_teacher_input_key(teacher, "attention_mask")
+                ],
+                position_ids=input_data.get(
+                    distiller.get_teacher_input_key(teacher, "position_ids"), None
+                ),
+                output_hidden_states=True,
+            )
             teacher_logits = teacher_outputs.logits
         
         # Qwen has different vocab_size for models in different sizes (see https://github.com/QwenLM/Qwen/issues/419)
@@ -78,7 +84,7 @@ class VariousDivergence(CrossEntropyLoss):
                 output_data["label"], 
                 log, 
                 teacher_logits=teacher_logits, 
-                teacher_target=output_data[f"teacher_{distiller.teacher_model_type}_label"]
+                teacher_target=output_data[distiller.get_teacher_label_key(teacher)]
             )
 
         logging_output = self.record_logging_output(logging_output, batch_denom, log)

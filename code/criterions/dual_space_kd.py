@@ -15,7 +15,8 @@ class DualSpaceKD(VariousDivergence):
         batch_denom, 
     ):
         model = distiller.student_model
-        teacher_model = distiller.teacher_model
+        teacher = distiller.get_teacher()
+        teacher_model = distiller.get_teacher_model(teacher)
         self.distiller = distiller
         outputs = model(
             input_data["input_ids"],
@@ -32,13 +33,18 @@ class DualSpaceKD(VariousDivergence):
         with torch.no_grad():
             teacher_model.eval()
             teacher_outputs = teacher_model(
-                input_data[f"teacher_{distiller.teacher_model_type}_input_ids"],
-                attention_mask=input_data[f"teacher_{distiller.teacher_model_type}_attention_mask"],
-                position_ids=input_data.get(f"teacher_{distiller.teacher_model_type}_position_ids", None), 
-                output_hidden_states=True)
+                input_data[distiller.get_teacher_input_key(teacher, "input_ids")],
+                attention_mask=input_data[
+                    distiller.get_teacher_input_key(teacher, "attention_mask")
+                ],
+                position_ids=input_data.get(
+                    distiller.get_teacher_input_key(teacher, "position_ids"), None
+                ),
+                output_hidden_states=True,
+            )
         
         kd_loss, log = self.compute_dual_space_kd_loss(
-            outputs, teacher_outputs, output_data, distiller, log
+            outputs, teacher_outputs, output_data, distiller, log, teacher
         )
         loss = (1.0 - self.kd_rate) * loss + self.kd_rate * kd_loss
         log["loss"] = loss
@@ -54,11 +60,12 @@ class DualSpaceKD(VariousDivergence):
         return loss / batch_denom, logging_output
 
     def compute_dual_space_kd_loss(
-        self, outputs, teacher_outputs, output_data, distiller, log
+        self, outputs, teacher_outputs, output_data, distiller, log, teacher=None
     ):
         target = output_data["label"]
         pad_mask = target.ne(self.padding_id)
-        teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
+        teacher = distiller.get_teacher(teacher)
+        teacher_target = output_data[distiller.get_teacher_label_key(teacher)]
         teacher_pad_mask = teacher_target.ne(self.padding_id)
 
         hiddens = outputs.hidden_states[-1]

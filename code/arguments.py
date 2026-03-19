@@ -27,11 +27,23 @@ def add_model_args(parser: argparse.ArgumentParser):
     group.add_argument('--model-path', type=str, help='model path')
     group.add_argument("--ckpt-name", type=str)
     group.add_argument("--model-type", type=str, default="gpt2")
+    group.add_argument("--teacher-id", type=str, default=None)
     group.add_argument("--teacher-model-type", type=str, default=None)
+    group.add_argument("--teacher-loss-type", type=str, default=None)
     group.add_argument("--n-gpu", type=int, default=1)
     group.add_argument("--n-nodes", type=int, default=1)
     group.add_argument("--teacher-model-path", type=str)
     group.add_argument("--teacher-model-fp16", action="store_true")
+    group.add_argument("--additional-teacher-ids", type=str, default=None,
+                       help='Comma-separated ids for additional teacher models')
+    group.add_argument("--additional-teacher-paths", type=str, default=None,
+                       help='Comma-separated paths for additional teacher models')
+    group.add_argument("--additional-teacher-types", type=str, default=None,
+                       help='Comma-separated types for additional teacher models')
+    group.add_argument("--additional-teacher-loss-types", type=str, default=None,
+                       help='Comma-separated loss types for additional teacher models')
+    group.add_argument("--multi-teacher-weights", type=str, default=None,
+                       help='Comma-separated weights for each teacher (including main teacher)')
     group.add_argument("--model-parallel", action="store_true")
     group.add_argument("--model-parallel-size", type=int, default=None)
     group.add_argument("--no-value", action="store_true")
@@ -183,6 +195,7 @@ def add_peft_args(parser: argparse.ArgumentParser):
     group.add_argument("--peft-path", type=str, default=None)
     group.add_argument("--teacher-peft-name", type=str, default=None)
     group.add_argument("--teacher-peft-path", type=str, default=None)
+    group.add_argument("--additional-teacher-peft-paths", type=str, default=None)
     return parser
 
 

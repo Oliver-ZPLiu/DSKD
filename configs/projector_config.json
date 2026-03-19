@@ -10,5 +10,29 @@
     "query": {
         "enabled": true,
         "structure": "2s-2t"
+    },
+    "t2s_teacher1": {
+        "enabled": false,
+        "structure": "t-s"
+    },
+    "s2t_teacher1": {
+        "enabled": false,
+        "structure": "s-t"
+    },
+    "t2s_teacher2": {
+        "enabled": false,
+        "structure": "t-s"
+    },
+    "s2t_teacher2": {
+        "enabled": false,
+        "structure": "s-t"
+    },
+    "t2s_teacher3": {
+        "enabled": false,
+        "structure": "t-s"
+    },
+    "s2t_teacher3": {
+        "enabled": false,
+        "structure": "s-t"
     }
 }

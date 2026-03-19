@@ -34,7 +34,8 @@ class MinEditDisForwardKLD(VariousDivergence):
         batch_denom, 
     ):
         model = distiller.student_model
-        teacher_model = distiller.teacher_model
+        teacher = distiller.get_teacher()
+        teacher_model = distiller.get_teacher_model(teacher)
         self.distiller = distiller
         outputs = model(
             input_data["input_ids"],
@@ -51,17 +52,23 @@ class MinEditDisForwardKLD(VariousDivergence):
         with torch.no_grad():
             teacher_model.eval()
             teacher_outputs = teacher_model(
-                input_data[f"teacher_{distiller.teacher_model_type}_input_ids"],
-                attention_mask=input_data[f"teacher_{distiller.teacher_model_type}_attention_mask"],
-                position_ids=input_data.get(f"teacher_{distiller.teacher_model_type}_position_ids", None), 
-                output_hidden_states=True)
+                input_data[distiller.get_teacher_input_key(teacher, "input_ids")],
+                attention_mask=input_data[
+                    distiller.get_teacher_input_key(teacher, "attention_mask")
+                ],
+                position_ids=input_data.get(
+                    distiller.get_teacher_input_key(teacher, "position_ids"), None
+                ),
+                output_hidden_states=True,
+            )
             
         teacher_logits = self.get_aligned_teacher_logits(
             logits, 
             teacher_outputs.logits, 
             input_data,
             output_data,
-            distiller
+            distiller,
+            teacher,
         )
         
         kd_loss = self.compute_forward_kl_divergence(
@@ -88,18 +95,19 @@ class MinEditDisForwardKLD(VariousDivergence):
         return loss / batch_denom, logging_output
 
     def get_aligned_teacher_logits(
-        self, logits, teacher_logits, input_data, output_data, distiller,
+        self, logits, teacher_logits, input_data, output_data, distiller, teacher
     ):
         target = output_data["label"]
         pad_mask = target.ne(self.padding_id)
-        teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
+        teacher = distiller.get_teacher(teacher)
+        teacher_target = output_data[distiller.get_teacher_label_key(teacher)]
         target_ids = torch.where(
             pad_mask, 
             target, 
             torch.ones_like(target) * distiller.student_tokenizer.eos_token_id
         )
         stu_tokenizer = distiller.student_tokenizer
-        tea_tokenizer = distiller.teacher_tokenizers[distiller.teacher_model_type]
+        tea_tokenizer = distiller.get_teacher_tokenizer(teacher)
 
         bsz = target.shape[0]
         aligned_tea_logits = []
@@ -109,7 +117,9 @@ class MinEditDisForwardKLD(VariousDivergence):
             stu_target_ids = target_ids[i, stu_content_idx]
 
             tea_content_idx = torch.nonzero(teacher_target[i].ne(self.padding_id)).view(-1)
-            tea_input_ids = input_data[f"teacher_{distiller.teacher_model_type}_input_ids"][i, tea_content_idx]
+            tea_input_ids = input_data[
+                distiller.get_teacher_input_key(teacher, "input_ids")
+            ][i, tea_content_idx]
 
             stu_per_step_logits = logits[i, stu_content_idx, :].float()
             tea_per_step_logits = teacher_logits[i, tea_content_idx, :].float()   # [slen, vocab]

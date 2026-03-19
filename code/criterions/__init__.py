@@ -4,6 +4,7 @@ from .dual_space_kd import DualSpaceKD
 from .dual_space_kd_with_cross_model_attention import DualSpaceKDWithCMA
 from .universal_logit_distillation import UniversalLogitDistillation
 from .min_edit_dis_kld import MinEditDisForwardKLD
+from .multi_teacher_router import MultiTeacherRouter
 
 
 criterion_list = {
@@ -13,6 +14,8 @@ criterion_list = {
     "dual_space_kd_with_cma": DualSpaceKDWithCMA,
     "universal_logit_distillation": UniversalLogitDistillation,
     "min_edit_dis_kld": MinEditDisForwardKLD,
+    "multi_teacher_router": MultiTeacherRouter,
+    "multi_teacher_divergence": MultiTeacherRouter,
 }
 
 def build_criterion(args):

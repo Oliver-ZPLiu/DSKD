@@ -16,7 +16,8 @@ class UniversalLogitDistillation(CrossEntropyLoss):
         batch_denom, 
     ):
         model = distiller.student_model
-        teacher_model = distiller.teacher_model
+        teacher = distiller.get_teacher()
+        teacher_model = distiller.get_teacher_model(teacher)
         self.distiller = distiller
         outputs = model(
             input_data["input_ids"],
@@ -33,14 +34,18 @@ class UniversalLogitDistillation(CrossEntropyLoss):
         with torch.no_grad():
             teacher_model.eval()
             teacher_outputs = teacher_model(
-                input_data[f"teacher_{distiller.teacher_model_type}_input_ids"],
-                attention_mask=input_data[f"teacher_{distiller.teacher_model_type}_attention_mask"],
-                position_ids=input_data.get(f"teacher_{distiller.teacher_model_type}_position_ids", None), 
+                input_data[distiller.get_teacher_input_key(teacher, "input_ids")],
+                attention_mask=input_data[
+                    distiller.get_teacher_input_key(teacher, "attention_mask")
+                ],
+                position_ids=input_data.get(
+                    distiller.get_teacher_input_key(teacher, "position_ids"), None
+                ),
                 output_hidden_states=True
             )
-        
+
         kd_loss, log = self.compute_universal_logit_distillation_loss(
-            outputs, teacher_outputs, output_data, distiller, log
+            outputs, teacher_outputs, output_data, distiller, log, teacher
         )
 
         loss = (1.0 - self.kd_rate) * loss + self.kd_rate * kd_loss
@@ -65,12 +70,13 @@ class UniversalLogitDistillation(CrossEntropyLoss):
         return loss / batch_denom, logging_output
 
     def compute_universal_logit_distillation_loss(
-        self, outputs, teacher_outputs, output_data, distiller, log
+        self, outputs, teacher_outputs, output_data, distiller, log, teacher=None
     ):
-        student_target = output_data["label"]
-        teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
-        student_logits = outputs.logits
-        teacher_logits = teacher_outputs.logits
+        student_target = output_data["label"].clone()
+        teacher = distiller.get_teacher(teacher)
+        teacher_target = output_data[distiller.get_teacher_label_key(teacher)].clone()
+        student_logits = outputs.logits.clone()
+        teacher_logits = teacher_outputs.logits.clone()
         # align the start of the student&teacher sequences
         for i in range(student_target.shape[0]):
             stu_start_idx = student_target[i].ne(self.padding_id).nonzero()[0][0]

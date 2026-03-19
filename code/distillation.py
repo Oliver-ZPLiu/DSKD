@@ -38,27 +38,27 @@ def prepare_dataset(args, distiller):
     if args.do_train:
         data["train"] = DistillDataset(
             args, "train", distiller.student_tokenizer,
-            distiller.teacher_tokenizers
+            distiller.teachers
         )
         log_rank("Num of train data: {}".format(len(data["train"])))
         
         data["dev"] = DistillDataset(
             args, "dev", distiller.student_tokenizer,
-            distiller.teacher_tokenizers
+            distiller.teachers
         )
         log_rank("Num of dev data: {}".format(len(data["dev"])))
 
         if os.path.exists(os.path.join(args.data_dir, "test.jsonl")):
             data["test"] = DistillDataset(
                 args, "test", distiller.student_tokenizer,
-                distiller.teacher_tokenizers
+                distiller.teachers
             )
             log_rank("Num of test data: {}".format(len(data["test"])))
 
     elif args.do_eval:
         data["test"] = DistillDataset(
             args, "test", distiller.student_tokenizer,
-            distiller.teacher_tokenizers
+            distiller.teachers
         )
         log_rank("Num of test data: {}".format(len(data["test"])))
     else:

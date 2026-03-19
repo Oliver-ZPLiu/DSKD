@@ -16,7 +16,8 @@ class DualSpaceKDWithCMA(VariousDivergence):
         batch_denom, 
     ):
         model = distiller.student_model
-        teacher_model = distiller.teacher_model
+        teacher = distiller.get_teacher()
+        teacher_model = distiller.get_teacher_model(teacher)
         self.distiller = distiller
         outputs = model(
             input_data["input_ids"],
@@ -33,13 +34,18 @@ class DualSpaceKDWithCMA(VariousDivergence):
         with torch.no_grad():
             teacher_model.eval()
             teacher_outputs = teacher_model(
-                input_data[f"teacher_{distiller.teacher_model_type}_input_ids"],
-                attention_mask=input_data[f"teacher_{distiller.teacher_model_type}_attention_mask"],
-                position_ids=input_data.get(f"teacher_{distiller.teacher_model_type}_position_ids", None), 
-                output_hidden_states=True)
+                input_data[distiller.get_teacher_input_key(teacher, "input_ids")],
+                attention_mask=input_data[
+                    distiller.get_teacher_input_key(teacher, "attention_mask")
+                ],
+                position_ids=input_data.get(
+                    distiller.get_teacher_input_key(teacher, "position_ids"), None
+                ),
+                output_hidden_states=True,
+            )
         
         kd_loss, log = self.compute_dual_space_kd_loss_with_cma(
-            outputs, teacher_outputs, input_data, output_data, distiller, log
+            outputs, teacher_outputs, input_data, output_data, distiller, log, teacher
         )
         loss = (1.0 - self.kd_rate) * loss + self.kd_rate * kd_loss
         log["loss"] = loss
@@ -55,10 +61,12 @@ class DualSpaceKDWithCMA(VariousDivergence):
         return loss / batch_denom, logging_output
     
     def compute_dual_space_kd_loss_with_cma(
-        self, outputs, teacher_outputs, input_data, output_data, distiller, log
+        self, outputs, teacher_outputs, input_data, output_data, distiller, log,
+        teacher=None
     ):
         target = output_data["label"]
-        teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
+        teacher = distiller.get_teacher(teacher)
+        teacher_target = output_data[distiller.get_teacher_label_key(teacher)]
         
         pad_mask = target.ne(self.padding_id)
         teacher_pad_mask = teacher_target.ne(self.padding_id)
@@ -98,7 +106,11 @@ class DualSpaceKDWithCMA(VariousDivergence):
         stu_target_embeds = stu_embed_tokens(formal_target).detach()
 
         formal_teacher_target = torch.where(teacher_pad_mask, teacher_target, torch.zeros_like(teacher_target))
-        formal_teacher_input = torch.where(teacher_pad_mask, input_data[f"teacher_{distiller.teacher_model_type}_input_ids"], torch.zeros_like(teacher_target))
+        formal_teacher_input = torch.where(
+            teacher_pad_mask,
+            input_data[distiller.get_teacher_input_key(teacher, "input_ids")],
+            torch.zeros_like(teacher_target),
+        )
         tea_input_embeds = tea_embed_tokens(formal_teacher_input).detach()
         tea_target_embeds = tea_embed_tokens(formal_teacher_target).detach()
 
