@@ -33,33 +33,135 @@ from rouge_metric import compute_metrics
 torch.set_num_threads(4)
 
 
+def build_distill_dataset(args, split, distiller, records=None, data_file=None):
+    return DistillDataset(
+        args,
+        split,
+        distiller.student_tokenizer,
+        distiller.teacher_tokenizers,
+        records=records,
+        data_file=data_file,
+    )
+
+
+def build_on_policy_train_data(args, tokenizer, student_model, device, epoch):
+    cache_dir = os.path.join(args.save_dir, "on_policy_rollouts")
+    output_path = os.path.join(cache_dir, f"train_epoch{epoch + 1}.jsonl")
+
+    if dist.get_rank() == 0:
+        os.makedirs(cache_dir, exist_ok=True)
+        train_path = os.path.join(args.data_dir, "train.jsonl")
+        with open(train_path) as f:
+            raw_data = [json.loads(line) for line in f.readlines()]
+
+        generation_config = GenerationConfig(
+            do_sample=args.on_policy_do_sample,
+            top_p=args.on_policy_top_p,
+            top_k=args.on_policy_top_k,
+            temperature=args.on_policy_temperature,
+            no_repeat_ngram_size=args.no_repeat_ngram_size,
+            repetition_penalty=args.repetition_penalty,
+            max_length=args.max_length,
+            min_length=None,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            return_dict_in_generate=True,
+            output_scores=False,
+        )
+
+        was_training = student_model.training
+        student_model.eval()
+        on_policy_records = []
+        with torch.no_grad():
+            for data in tqdm(raw_data, desc="On-policy rollout", disable=False):
+                prompt = data["prompt"]
+                prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
+                prompt_ids = prompt_ids[:args.max_prompt_length]
+
+                if len(prompt_ids) >= args.max_length:
+                    response = ""
+                else:
+                    input_ids = torch.tensor(
+                        prompt_ids, dtype=torch.long, device=device
+                    ).unsqueeze(0)
+                    attention_mask = torch.ones_like(input_ids)
+                    gen_out = student_model.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        generation_config=generation_config,
+                        max_new_tokens=args.max_length - input_ids.size(1),
+                    )
+                    full_ids = gen_out.sequences
+                    response_ids = full_ids[:, input_ids.size(1):]
+                    response = tokenizer.batch_decode(
+                        response_ids, skip_special_tokens=True
+                    )[0].strip()
+
+                on_policy_records.append({
+                    "prompt": prompt,
+                    "output": response,
+                })
+
+        if was_training:
+            student_model.train()
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            for item in on_policy_records:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+        log_rank(f"Saved on-policy train data to {output_path}")
+
+    dist.barrier()
+    return output_path
+
+
+def maybe_refresh_on_policy_dataset(args, dataset, distiller, tokenizer, student_model, device, epoch):
+    if not args.on_policy:
+        return
+
+    if epoch < args.on_policy_after_epoch:
+        return
+
+    refresh_epochs = max(1, args.on_policy_refresh_epochs)
+    if (epoch - args.on_policy_after_epoch) % refresh_epochs != 0:
+        return
+
+    rollout_file = build_on_policy_train_data(
+        args,
+        tokenizer,
+        student_model,
+        device,
+        epoch,
+    )
+    dataset["train"] = build_distill_dataset(
+        args,
+        "train",
+        distiller,
+        data_file=rollout_file,
+    )
+    log_rank(
+        "Using on-policy train set at epoch {} with {} samples".format(
+            epoch + 1,
+            len(dataset["train"]),
+        )
+    )
+
+
 def prepare_dataset(args, distiller):
     data = {}
     if args.do_train:
-        data["train"] = DistillDataset(
-            args, "train", distiller.student_tokenizer,
-            distiller.teacher_tokenizers
-        )
+        data["train"] = build_distill_dataset(args, "train", distiller)
         log_rank("Num of train data: {}".format(len(data["train"])))
         
-        data["dev"] = DistillDataset(
-            args, "dev", distiller.student_tokenizer,
-            distiller.teacher_tokenizers
-        )
+        data["dev"] = build_distill_dataset(args, "dev", distiller)
         log_rank("Num of dev data: {}".format(len(data["dev"])))
 
         if os.path.exists(os.path.join(args.data_dir, "test.jsonl")):
-            data["test"] = DistillDataset(
-                args, "test", distiller.student_tokenizer,
-                distiller.teacher_tokenizers
-            )
+            data["test"] = build_distill_dataset(args, "test", distiller)
             log_rank("Num of test data: {}".format(len(data["test"])))
 
     elif args.do_eval:
-        data["test"] = DistillDataset(
-            args, "test", distiller.student_tokenizer,
-            distiller.teacher_tokenizers
-        )
+        data["test"] = build_distill_dataset(args, "test", distiller)
         log_rank("Num of test data: {}".format(len(data["test"])))
     else:
         raise ValueError("Do train and do eval must set one")
@@ -87,21 +189,6 @@ def finetune(
         dp_group = None
         criterion = build_criterion(args)
 
-    sampler = DistributedSampler(
-        dataset["train"], 
-        shuffle=True, 
-        drop_last=True, 
-        rank=dp_rank, 
-        num_replicas=dp_world_size
-    )
-    train_dataloader = DataLoader(
-        dataset['train'], 
-        sampler=sampler, 
-        batch_size=args.batch_size, 
-        num_workers=args.num_workers, 
-        collate_fn=dataset["train"].collate
-    )
-    
     step = 0
     logging_output = {
         "epoch": 0,
@@ -127,6 +214,30 @@ def finetune(
     # )
 
     for epoch in range(args.num_epochs):
+        maybe_refresh_on_policy_dataset(
+            args,
+            dataset,
+            model.module,
+            tokenizer,
+            model.module.student_model,
+            device,
+            epoch,
+        )
+
+        sampler = DistributedSampler(
+            dataset["train"], 
+            shuffle=True, 
+            drop_last=True, 
+            rank=dp_rank, 
+            num_replicas=dp_world_size
+        )
+        train_dataloader = DataLoader(
+            dataset['train'], 
+            sampler=sampler, 
+            batch_size=args.batch_size, 
+            num_workers=args.num_workers, 
+            collate_fn=dataset["train"].collate
+        )
         sampler.set_epoch(epoch)
         logging_output["epoch"] += 1
         log_rank("Start iterations of epoch {}".format(epoch + 1))

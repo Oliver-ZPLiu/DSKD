@@ -36,6 +36,12 @@ KD_RATE=0.5
 KD_TEMP=2.0
 # length
 MAX_LENGTH=512
+# recommended on-policy rollout settings
+ON_POLICY_AFTER_EPOCH=1
+ON_POLICY_REFRESH_EPOCHS=1
+ON_POLICY_TOP_K=0
+ON_POLICY_TOP_P=0.9
+ON_POLICY_TEMPERATURE=1.0
 # runtime
 PRECISION="bf16"
 CRITERION="universal_logit_distillation"
@@ -79,6 +85,14 @@ OPTS+=" --kd-temperature ${KD_TEMP}"
 # length
 OPTS+=" --max-length ${MAX_LENGTH}"
 OPTS+=" --max-prompt-length 256"
+# on-policy rollout
+OPTS+=" --on-policy"
+OPTS+=" --on-policy-after-epoch ${ON_POLICY_AFTER_EPOCH}"
+OPTS+=" --on-policy-refresh-epochs ${ON_POLICY_REFRESH_EPOCHS}"
+OPTS+=" --on-policy-do-sample"
+OPTS+=" --on-policy-top-k ${ON_POLICY_TOP_K}"
+OPTS+=" --on-policy-top-p ${ON_POLICY_TOP_P}"
+OPTS+=" --on-policy-temperature ${ON_POLICY_TEMPERATURE}"
 # runtime
 OPTS+=" --do-train"
 OPTS+=" --do-valid"

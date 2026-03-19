@@ -33,9 +33,15 @@ EVAL_BATCH_SIZE=32
 EPOCH=20
 KD_RATE=0.5
 KD_TEMP=2.0
-KD_OBJ="forward_kl"   # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
+KD_OBJ="reverse_kl"   # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
 # length
 MAX_LENGTH=512
+# recommended on-policy rollout settings
+ON_POLICY_AFTER_EPOCH=1
+ON_POLICY_REFRESH_EPOCHS=1
+ON_POLICY_TOP_K=0
+ON_POLICY_TOP_P=0.9
+ON_POLICY_TEMPERATURE=1.0
 # runtime
 PRECISION="bf16"
 CRITERION="various_divergence"
@@ -51,8 +57,10 @@ mkdir -p ${SAVE_PATH}
 OPTS=""
 # model
 OPTS+=" --base-path ${BASE_PATH}"
+OPTS+=" --model-type ${CKPT_TYPE}"
 OPTS+=" --model-path ${CKPT_PATH}"
 OPTS+=" --n-gpu ${GPUS_PER_NODE}"
+OPTS+=" --teacher-model-type ${TEACHER_MODEL_TYPE}"
 OPTS+=" --teacher-model-path ${TEACHER_MODEL_PATH}"
 OPTS+=" --teacher-model-fp16"
 # OPTS+=" --gradient-checkpointing"
@@ -78,6 +86,14 @@ OPTS+=" --kd-objective ${KD_OBJ}"
 # length
 OPTS+=" --max-length ${MAX_LENGTH}"
 OPTS+=" --max-prompt-length 256"
+# on-policy rollout
+OPTS+=" --on-policy"
+OPTS+=" --on-policy-after-epoch ${ON_POLICY_AFTER_EPOCH}"
+OPTS+=" --on-policy-refresh-epochs ${ON_POLICY_REFRESH_EPOCHS}"
+OPTS+=" --on-policy-do-sample"
+OPTS+=" --on-policy-top-k ${ON_POLICY_TOP_K}"
+OPTS+=" --on-policy-top-p ${ON_POLICY_TOP_P}"
+OPTS+=" --on-policy-temperature ${ON_POLICY_TEMPERATURE}"
 # runtime
 OPTS+=" --do-train"
 OPTS+=" --do-valid"

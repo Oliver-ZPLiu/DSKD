@@ -42,7 +42,13 @@ MAX_LENGTH=512
 # runtime
 PRECISION="bf16"
 CRITERION="dual_space_kd"
-KD_OBJ="forward_kl"   # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
+KD_OBJ="reverse_kl"   # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
+# recommended on-policy rollout settings
+ON_POLICY_AFTER_EPOCH=1
+ON_POLICY_REFRESH_EPOCHS=1
+ON_POLICY_TOP_K=0
+ON_POLICY_TOP_P=0.9
+ON_POLICY_TEMPERATURE=1.0
 CONFIG="${KD_OBJ}-${PRECISION}"
 SETTING=criterion=${CRITERION}__${CONFIG}__teacher=${TEACHER_MODEL_NAME}__kd^rate=${KD_RATE}__kd^temp=${KD_TEMP}__epoch=${EPOCH}__bsz=${BATCH_SIZE}x${GRAD_ACC}x${GPUS_PER_NODE}=$((BATCH_SIZE * GRAD_ACC * GPUS_PER_NODE * NNODES))__lr=${LR}__proj^lr=${PROJECTOR_LR}
 SAVE_PATH="${BASE_PATH}/outputs/${CKPT_TYPE}/${CKPT_NAME}/${TASK}/${SETTING}"
@@ -88,6 +94,14 @@ OPTS+=" --projector-config-path ${PROJECTOR_CONFIG_PATH}"
 # length
 OPTS+=" --max-length ${MAX_LENGTH}"
 OPTS+=" --max-prompt-length 256"
+# on-policy rollout
+OPTS+=" --on-policy"
+OPTS+=" --on-policy-after-epoch ${ON_POLICY_AFTER_EPOCH}"
+OPTS+=" --on-policy-refresh-epochs ${ON_POLICY_REFRESH_EPOCHS}"
+OPTS+=" --on-policy-do-sample"
+OPTS+=" --on-policy-top-k ${ON_POLICY_TOP_K}"
+OPTS+=" --on-policy-top-p ${ON_POLICY_TOP_P}"
+OPTS+=" --on-policy-temperature ${ON_POLICY_TEMPERATURE}"
 # runtime
 OPTS+=" --do-train"
 OPTS+=" --do-valid"
