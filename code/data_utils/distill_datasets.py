@@ -51,11 +51,31 @@ class DistillDataset(Dataset):
             with open(path) as f:
                 raw_data = [json.loads(l) for l in f.readlines()]
 
-        raw_data = normalize_sft_records(raw_data)
+        raw_data_origin = raw_data
+        raw_data = normalize_sft_records(raw_data_origin)
         if not raw_data:
             raise ValueError(f"No valid data found in {path}")
 
-        self.answers = [x["references"] for x in raw_data]
+        metric_type = getattr(self.args, "eval_metric_type", "rouge")
+        metric_type_l = str(metric_type).lower()
+        rouge_like = metric_type_l in ["rouge", "rougel", "rouge-l", "em_rouge", "rouge_em"]
+        acc_like = metric_type_l in ["gsm8k", "gsm", "math", "accuracy", "acc"]
+        use_answer = (not rouge_like) and acc_like
+
+        if use_answer and len(raw_data_origin) == len(raw_data):
+            self.answers = []
+            for raw_item, norm_item in zip(raw_data_origin, raw_data):
+                if isinstance(raw_item, dict):
+                    ans = raw_item.get("answer", None)
+                    if isinstance(ans, str) and ans.strip() != "":
+                        self.answers.append([ans.strip()])
+                        continue
+                    if ans is not None and not isinstance(ans, str):
+                        self.answers.append([str(ans)])
+                        continue
+                self.answers.append(norm_item["references"])
+        else:
+            self.answers = [x["references"] for x in raw_data]
 
         log_rank("Processing dataset for student model (and all teacher models)...")
         seg = np.iinfo(np.int32).max * 2 + 1

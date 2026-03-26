@@ -34,19 +34,15 @@ class PromptDataset(Dataset):
             self.answers = []
 
         self.num = len(self.data)
-        # self.data = self.data[:self.num]
+        self.data = self.data[:self.num]
 
         if not self.answers:
             log_rank("WARNING: No answers exist")
 
-        self.label_map = {}
-        for refs in self.answers:
-            if not refs:
-                continue
-            token_ids = tokenizer.encode(refs[0], add_special_tokens=False)
-            if len(token_ids) == 0:
-                continue
-            self.label_map[token_ids[0]] = refs[0]
+        self.label_map = {
+            tokenizer.encode(x[0], add_special_tokens=False)[0]: x[0]
+            for x in self.answers
+        }
             
         
         log_rank(f"Num instances: {len(self.data)}")
@@ -66,14 +62,15 @@ class PromptDataset(Dataset):
         data_origin = normalize_sft_records(data_origin)
         data_origin = data_origin[:data_num] if data_num != -1 else data_origin
 
-        show_progress = True
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            show_progress = get_rank() == 0
-
         data = []
-        for d in tqdm(data_origin, desc="Loading Data ", disable=(not show_progress)):
+        for d in tqdm(data_origin, desc="Loading Data ", disable=(get_rank() != 0)):
             prompt = d["prompt"].replace("<n>", "\n")
-            prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+            prompt_ids = self.tokenizer.encode(
+                prompt,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self.max_prompt_length,
+            )
             output_ids = self.tokenizer.encode(d["output"], add_special_tokens=False)
             output_ids += [self.tokenizer.eos_token_id]
             data.append({
