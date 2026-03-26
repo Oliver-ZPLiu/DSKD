@@ -9,6 +9,7 @@ from tqdm import tqdm
 from utils import log_rank
 from typing import Dict, Optional
 from transformers import AutoTokenizer
+from data_utils.sample_formats import normalize_sft_records
 
 
 class DistillDataset(Dataset):
@@ -18,11 +19,15 @@ class DistillDataset(Dataset):
         split: str,
         student_tokenizer: Dict[str, AutoTokenizer], 
         teacher_tokenizers: Optional[Dict[str, AutoTokenizer]] = {},
+        records=None,
+        data_file=None,
     ):
         self.args = args
         self.split = split
         self.student_tokenizer = student_tokenizer
         self.teacher_tokenizers = teacher_tokenizers
+        self.records = records
+        self.data_file = data_file
         self.max_length = args.max_length
         self.max_prompt_length = args.max_prompt_length
         self.dataset = self._load_and_process_data()
@@ -36,48 +41,60 @@ class DistillDataset(Dataset):
     
     def _load_and_process_data(self):
         dataset = []
-        path = os.path.join(self.args.data_dir, f"{self.split}.jsonl")
-
-        if os.path.exists(path):
+        if self.records is not None:
+            raw_data = self.records
+            path = "<memory>"
+        else:
+            path = self.data_file or os.path.join(self.args.data_dir, f"{self.split}.jsonl")
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"No such file named {path}")
             with open(path) as f:
                 raw_data = [json.loads(l) for l in f.readlines()]
-                self.answers = [x["output"] if isinstance(x["output"], list) else [x["output"]] for x in raw_data]
-            
-            log_rank("Processing dataset for student model (and all teacher models)...")  
-            seg = np.iinfo(np.int32).max * 2 + 1        
-            for data in tqdm(raw_data, disable=(dist.get_rank() != 0)):
-                student_prompt_ids = self.student_tokenizer.encode(
+
+        raw_data = normalize_sft_records(raw_data)
+        if not raw_data:
+            raise ValueError(f"No valid data found in {path}")
+
+        self.answers = [x["references"] for x in raw_data]
+
+        log_rank("Processing dataset for student model (and all teacher models)...")
+        seg = np.iinfo(np.int32).max * 2 + 1
+        show_progress = True
+        if dist.is_available() and dist.is_initialized():
+            show_progress = dist.get_rank() == 0
+
+        for data in tqdm(raw_data, disable=(not show_progress)):
+            student_prompt_ids = self.student_tokenizer.encode(
+                data["prompt"], add_special_tokens=False
+            )
+            student_prompt_ids = student_prompt_ids[:self.max_prompt_length]
+            student_response_ids = self.student_tokenizer.encode(
+                data["output"], add_special_tokens=False
+            )
+            student_response_ids = student_response_ids \
+                                 + [self.student_tokenizer.eos_token_id]
+            tokenized_data = {
+                "student_input_ids": student_prompt_ids + [seg] + student_response_ids,
+            }
+
+            for model_type in self.teacher_tokenizers:
+                if self.teacher_tokenizers[model_type] is None:
+                    continue
+
+                teacher_prompt_ids = self.teacher_tokenizers[model_type].encode(
                     data["prompt"], add_special_tokens=False
                 )
-                student_prompt_ids = student_prompt_ids[:self.max_prompt_length]
-                student_response_ids = self.student_tokenizer.encode(
+                teacher_prompt_ids = teacher_prompt_ids[:self.max_prompt_length]
+                teacher_response_ids = self.teacher_tokenizers[model_type].encode(
                     data["output"], add_special_tokens=False
                 )
-                student_response_ids = student_response_ids \
-                                     + [self.student_tokenizer.eos_token_id]
-                tokenized_data = {
-                    "student_input_ids": student_prompt_ids + [seg] + student_response_ids,
-                }
-        
-                for model_type in self.teacher_tokenizers:
-                    if self.teacher_tokenizers[model_type] is None: continue
-                        
-                    teacher_prompt_ids = self.teacher_tokenizers[model_type].encode(
-                        data["prompt"], add_special_tokens=False
-                    )
-                    teacher_prompt_ids = teacher_prompt_ids[:self.max_prompt_length]
-                    teacher_response_ids = self.teacher_tokenizers[model_type].encode(
-                        data["output"], add_special_tokens=False
-                    )
-                    teacher_response_ids = teacher_response_ids \
-                                            + [self.teacher_tokenizers[model_type].eos_token_id]
-                    tokenized_data[f"teacher_{model_type}_input_ids"] = \
-                        teacher_prompt_ids + [seg] + teacher_response_ids
+                teacher_response_ids = teacher_response_ids \
+                                        + [self.teacher_tokenizers[model_type].eos_token_id]
+                tokenized_data[f"teacher_{model_type}_input_ids"] = \
+                    teacher_prompt_ids + [seg] + teacher_response_ids
 
-                dataset.append(tokenized_data)
-            return dataset
-        else:
-            raise FileNotFoundError(f"No such file named {path}")
+            dataset.append(tokenized_data)
+        return dataset
         
     def _process_lm(
         self, i, samp, model_data, no_model_data, gen_data, 

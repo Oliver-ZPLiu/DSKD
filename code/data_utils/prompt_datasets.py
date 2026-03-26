@@ -7,6 +7,7 @@ from torch.distributed import get_rank, get_world_size
 from utils import print_rank, log_rank
 from tqdm import tqdm
 import json
+from data_utils.sample_formats import normalize_sft_records
 
 
 class PromptDataset(Dataset):
@@ -24,25 +25,28 @@ class PromptDataset(Dataset):
 
         if args.json_data:
             self.data, self.origin_data = self.load_data_json(data_path, num)
+            self.raw = self.origin_data
+            self.answers = [x["references"] for x in self.raw]
         else:
             # txt data
             self.data = self.load_data_txt(data_path)
+            self.raw = []
+            self.answers = []
 
         self.num = len(self.data)
         # self.data = self.data[:self.num]
-        
-        if os.path.exists(os.path.join(data_path, f"{self.split}_{self.args.model_type}.jsonl")):
-            with open(os.path.join(data_path, f"{self.split}_{self.args.model_type}.jsonl")) as f:
-                self.raw = [json.loads(line) for line in f.readlines()[:self.num]]
-                self.answers = [x["output"] if isinstance(x["output"], list) else [x["output"]] for x in self.raw]
-        elif os.path.exists(os.path.join(data_path, f"{split}.jsonl")):
-            with open(os.path.join(data_path, f"{split}.jsonl")) as f:
-                self.raw = [json.loads(line) for line in f.readlines()[:self.num]]
-                self.answers = [x["output"] if isinstance(x["output"], list) else [x["output"]] for x in self.raw]
-        else:
+
+        if not self.answers:
             log_rank("WARNING: No answers exist")
-            
-        self.label_map = {tokenizer.encode(x[0], add_special_tokens=False)[0]: x[0] for x in self.answers}
+
+        self.label_map = {}
+        for refs in self.answers:
+            if not refs:
+                continue
+            token_ids = tokenizer.encode(refs[0], add_special_tokens=False)
+            if len(token_ids) == 0:
+                continue
+            self.label_map[token_ids[0]] = refs[0]
             
         
         log_rank(f"Num instances: {len(self.data)}")
@@ -59,17 +63,18 @@ class PromptDataset(Dataset):
         with open(data_path) as f:
             lines = f.readlines()
         data_origin = [json.loads(line) for line in lines]
+        data_origin = normalize_sft_records(data_origin)
         data_origin = data_origin[:data_num] if data_num != -1 else data_origin
+
+        show_progress = True
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            show_progress = get_rank() == 0
+
         data = []
-        for d in tqdm(data_origin, desc="Loading Data ", disable=(get_rank() != 0)):
+        for d in tqdm(data_origin, desc="Loading Data ", disable=(not show_progress)):
             prompt = d["prompt"].replace("<n>", "\n")
             prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
-            output_ids = None
-            if "output" in d:
-                if isinstance(d["output"], list):
-                    output_ids = self.tokenizer.encode(d["output"][0], add_special_tokens=False)
-                else:
-                    output_ids = self.tokenizer.encode(d["output"], add_special_tokens=False)
+            output_ids = self.tokenizer.encode(d["output"], add_special_tokens=False)
             output_ids += [self.tokenizer.eos_token_id]
             data.append({
                 "prompt_ids": prompt_ids,
