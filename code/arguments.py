@@ -68,6 +68,9 @@ def add_runtime_args(parser: argparse.ArgumentParser):
     group.add_argument("--report-logits", action="store_true")
     group.add_argument("--only-save-projector", action="store_true")
     group.add_argument("--debug", action="store_true")
+    group.add_argument("--do-cost-analysis", action="store_true")
+    group.add_argument("--cost-analysis-steps", type=int, default=5)
+    group.add_argument("--cost-analysis-warmup-steps", type=int, default=1)
     return parser
 
 

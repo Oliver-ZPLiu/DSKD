@@ -67,6 +67,196 @@ def prepare_dataset(args, distiller):
     return data
 
 
+def _dist_reduce_scalar(value, op, device):
+    tensor = torch.tensor(float(value), device=device, dtype=torch.float64)
+    if op == "mean":
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        tensor /= dist.get_world_size()
+    elif op == "sum":
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    elif op == "max":
+        dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+    else:
+        raise ValueError(f"Unsupported op '{op}'")
+    return tensor.item()
+
+
+def _run_one_global_step(model, criterion, global_batch, loss_denom):
+    logging_output = {
+        "epoch": 0,
+        "global_step": 0,
+        "loss": [],
+        "nll_loss": [],
+        "kd_loss": [],
+        "accuracy": [],
+        "micro_step_time": [],
+        "step_time": []
+    }
+    for batch in global_batch:
+        loss, logging_output = model(criterion, batch, logging_output, loss_denom)
+        model.backward(loss)
+        model.step()
+
+
+def analyze_training_cost(args, model, dataset, device):
+    if not args.do_train:
+        log_rank("Skip cost analysis because --do-train is not set.")
+        return
+
+    dp_world_size = dist.get_world_size()
+    dp_rank = dist.get_rank()
+    criterion = build_criterion(args)
+
+    sampler = DistributedSampler(
+        dataset,
+        shuffle=True,
+        drop_last=True,
+        rank=dp_rank,
+        num_replicas=dp_world_size
+    )
+    dataloader = DataLoader(
+        dataset,
+        sampler=sampler,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        collate_fn=dataset.collate
+    )
+    train_iter = iter(dataloader)
+
+    warmup_steps = max(0, int(args.cost_analysis_warmup_steps))
+    target_steps = max(1, int(args.cost_analysis_steps))
+    max_trials = warmup_steps + target_steps + 10
+
+    measured = []
+    model.train()
+    log_rank(
+        f"Start cost analysis: warmup_steps={warmup_steps}, "
+        f"measured_steps={target_steps}, grad_acc={args.gradient_accumulation_steps}"
+    )
+
+    total_trials = 0
+    while len(measured) < target_steps and total_trials < max_trials:
+        total_trials += 1
+        global_batch = []
+        for _ in range(args.gradient_accumulation_steps):
+            try:
+                input_batch, output_batch, _ = next(train_iter)
+            except StopIteration:
+                break
+            dataset.move_to_device([input_batch, output_batch], device)
+            global_batch.append({
+                "input_batch": input_batch,
+                "output_batch": output_batch
+            })
+
+        if len(global_batch) < args.gradient_accumulation_steps:
+            break
+
+        global_token_num = sum(
+            batch["output_batch"]["label"].ne(-100).sum() for batch in global_batch
+        )
+        dist.all_reduce(global_token_num, dist.ReduceOp.SUM)
+        loss_denom = global_token_num / (args.gradient_accumulation_steps * dp_world_size)
+
+        if warmup_steps > 0:
+            _run_one_global_step(model, criterion, global_batch, loss_denom)
+            warmup_steps -= 1
+            continue
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(device)
+            torch.cuda.synchronize(device)
+
+        profiler_activities = [torch.profiler.ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            profiler_activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+        st = time.time()
+        with torch.profiler.profile(
+            activities=profiler_activities,
+            with_flops=True,
+            profile_memory=False,
+            record_shapes=False
+        ) as prof:
+            _run_one_global_step(model, criterion, global_batch, loss_denom)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+        elapsed_ms_local = (time.time() - st) * 1000.0
+
+        flops_local = 0.0
+        for evt in prof.key_averages():
+            evt_flops = getattr(evt, "flops", 0)
+            if evt_flops:
+                flops_local += float(evt_flops)
+
+        if torch.cuda.is_available():
+            peak_alloc_local = float(torch.cuda.max_memory_allocated(device))
+            peak_reserved_local = float(torch.cuda.max_memory_reserved(device))
+        else:
+            peak_alloc_local = 0.0
+            peak_reserved_local = 0.0
+
+        elapsed_ms_mean = _dist_reduce_scalar(elapsed_ms_local, "mean", device)
+        elapsed_ms_max = _dist_reduce_scalar(elapsed_ms_local, "max", device)
+        flops_mean = _dist_reduce_scalar(flops_local, "mean", device)
+        flops_max = _dist_reduce_scalar(flops_local, "max", device)
+        peak_alloc_max = _dist_reduce_scalar(peak_alloc_local, "max", device)
+        peak_reserved_max = _dist_reduce_scalar(peak_reserved_local, "max", device)
+
+        step_tokens = float(global_token_num.item())
+        toks_per_sec = step_tokens / max(elapsed_ms_max / 1000.0, 1e-6)
+        measured.append({
+            "step_tokens": step_tokens,
+            "time_ms_mean": elapsed_ms_mean,
+            "time_ms_max": elapsed_ms_max,
+            "tflops_mean": flops_mean / 1e12,
+            "tflops_max": flops_max / 1e12,
+            "mem_alloc_mb_max": peak_alloc_max / (1024.0 * 1024.0),
+            "mem_reserved_mb_max": peak_reserved_max / (1024.0 * 1024.0),
+            "tokens_per_sec": toks_per_sec
+        })
+
+        log_rank(
+            "cost_step {} | tokens {:.0f} | time_mean {:.2f} ms | time_max {:.2f} ms | "
+            "TFLOPs(mean/max) {:.3f}/{:.3f} | mem_alloc_max {:.2f} MB | mem_reserved_max {:.2f} MB | "
+            "throughput {:.2f} tok/s".format(
+                len(measured),
+                step_tokens,
+                elapsed_ms_mean,
+                elapsed_ms_max,
+                flops_mean / 1e12,
+                flops_max / 1e12,
+                peak_alloc_max / (1024.0 * 1024.0),
+                peak_reserved_max / (1024.0 * 1024.0),
+                toks_per_sec
+            )
+        )
+
+    if not measured:
+        log_rank("Cost analysis failed: no valid measured steps were collected.")
+        return
+
+    summary = {
+        "analyzed_steps": len(measured),
+        "avg_step_tokens": sum(x["step_tokens"] for x in measured) / len(measured),
+        "avg_time_ms_mean": sum(x["time_ms_mean"] for x in measured) / len(measured),
+        "avg_time_ms_max": sum(x["time_ms_max"] for x in measured) / len(measured),
+        "avg_tflops_mean": sum(x["tflops_mean"] for x in measured) / len(measured),
+        "avg_tflops_max": sum(x["tflops_max"] for x in measured) / len(measured),
+        "avg_mem_alloc_mb_max": sum(x["mem_alloc_mb_max"] for x in measured) / len(measured),
+        "avg_mem_reserved_mb_max": sum(x["mem_reserved_mb_max"] for x in measured) / len(measured),
+        "avg_tokens_per_sec": sum(x["tokens_per_sec"] for x in measured) / len(measured),
+    }
+    log_rank(f"Cost analysis summary: {summary}")
+
+    if dist.get_rank() == 0 and args.save_dir is not None:
+        os.makedirs(args.save_dir, exist_ok=True)
+        with open(os.path.join(args.save_dir, "cost_analysis.json"), "w", encoding="utf-8") as f:
+            json.dump({"summary": summary, "steps": measured}, f, indent=2)
+        log_rank(f"Cost analysis has been saved to {os.path.join(args.save_dir, 'cost_analysis.json')}")
+
+
 def finetune(
     args, 
     tokenizer: AutoTokenizer, 
@@ -579,6 +769,10 @@ def main():
         mpu=None,
         config_params=ds_config
     )
+
+    if args.do_train and args.do_cost_analysis:
+        analyze_training_cost(args, model, dataset["train"], device)
+        return
     
     if args.do_train:
         finetune(args, distiller.student_tokenizer, model, optimizer, lr_scheduler, dataset, device)
