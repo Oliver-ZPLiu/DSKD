@@ -37,6 +37,27 @@ BATCH_SIZE_MC="${BATCH_SIZE_MC:-$BATCH_SIZE_MC_DEFAULT}"
 BATCH_SIZE_IFEVAL="${BATCH_SIZE_IFEVAL:-$BATCH_SIZE_IFEVAL_DEFAULT}"
 DTYPE="${DTYPE:-$DTYPE_DEFAULT}"
 
+# =========================
+# Offline HF cache config (edit here)
+# =========================
+# Point these to your downloaded local HF cache directory.
+# Example:
+# HF_HOME_DEFAULT="/docker/l00625974/.cache/huggingface"
+HF_HOME_DEFAULT="/docker/l00625974/.cache/huggingface"
+HUGGINGFACE_HUB_CACHE_DEFAULT="${HF_HOME_DEFAULT}/hub"
+HF_DATASETS_CACHE_DEFAULT="${HF_HOME_DEFAULT}/datasets"
+
+HF_HOME="${HF_HOME:-$HF_HOME_DEFAULT}"
+HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$HUGGINGFACE_HUB_CACHE_DEFAULT}"
+HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_DATASETS_CACHE_DEFAULT}"
+
+export HF_HOME
+export HUGGINGFACE_HUB_CACHE
+export HF_DATASETS_CACHE
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 OPTS=""
 OPTS+=" --model-path ${MODEL_PATH}"
 OPTS+=" --peft-path ${PEFT_PATH}"
@@ -52,6 +73,21 @@ OPTS+=" --main-process-port ${MASTER_PORT}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONIOENCODING=utf-8
 export PYTHONPATH=${BASE_PATH}
+
+if [ ! -d "${HF_HOME}" ]; then
+  echo "[ERROR] HF_HOME not found: ${HF_HOME}"
+  exit 1
+fi
+if [ ! -d "${HUGGINGFACE_HUB_CACHE}" ]; then
+  echo "[ERROR] HUGGINGFACE_HUB_CACHE not found: ${HUGGINGFACE_HUB_CACHE}"
+  exit 1
+fi
+mkdir -p "${HF_DATASETS_CACHE}"
+
+echo "[INFO] HF_HOME=${HF_HOME}"
+echo "[INFO] HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE}"
+echo "[INFO] HF_DATASETS_CACHE=${HF_DATASETS_CACHE}"
+echo "[INFO] Offline mode: HF_HUB_OFFLINE=${HF_HUB_OFFLINE}, HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE}, TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE}"
 
 CMD="python ${BASE_PATH}/scripts/eval/run_lm_eval_harness.py ${OPTS}"
 echo ${CMD}
